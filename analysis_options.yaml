@@ -1,0 +1,9 @@
+analyzer:
+  exclude:
+    - build/**
+    - dist/**
+
+linter:
+  rules:
+    avoid_print: true
+    sort_child_properties_last: true

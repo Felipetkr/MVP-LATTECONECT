@@ -1,0 +1,18 @@
+{
+  "name": "LatteConect",
+  "short_name": "LatteConect",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#fbf7f0",
+  "theme_color": "#004f9f",
+  "description": "Banco de leite digital para conectar doadoras, familias, hospitais e bancos parceiros.",
+  "orientation": "portrait-primary",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

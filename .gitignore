@@ -1,0 +1,34 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+
+# Test outputs
+/coverage
+
+# Local files and secrets
+.DS_Store
+*.pem
+.env*
+
+# Generated/local tooling outputs
+.openai/
+/dist/
+/outputs/
+/work/
+/tela*.png
+/*.pdf
+
+.dart_tool/
+build/
+dist/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+coverage/
