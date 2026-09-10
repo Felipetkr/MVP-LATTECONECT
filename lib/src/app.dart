@@ -9,6 +9,7 @@ import '../browser_adapter.dart' as browser;
 const String _brandName = 'LatteConect';
 const String _brandCaption = 'banco de leite';
 const String _eventsStorageKey = 'latteconect-operational-events';
+const String _notificationsStorageKey = 'latteconect-notifications';
 const double _maxContentWidth = 1420;
 const double _headerHeight = 78;
 const double _radius = 8;
@@ -187,6 +188,42 @@ class OperationalEvent {
       status: read('status', 'Recebido'),
       statusTone: read('statusTone', 'blue'),
       createdAt: read('createdAt', formatCreatedAt()),
+    );
+  }
+}
+
+class AppNotification {
+  const AppNotification({
+    required this.id,
+    required this.title,
+    required this.message,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String title;
+  final String message;
+  final String createdAt;
+
+  Map<String, String> toJson() => {
+    'id': id,
+    'title': title,
+    'message': message,
+    'createdAt': createdAt,
+  };
+
+  static AppNotification? fromJson(Object? value) {
+    if (value is! Map<String, Object?>) return null;
+    final title = value['title'];
+    final message = value['message'];
+    if (title is! String || message is! String) return null;
+    return AppNotification(
+      id:
+          value['id'] as String? ??
+          'notice-${DateTime.now().microsecondsSinceEpoch}',
+      title: title,
+      message: message,
+      createdAt: value['createdAt'] as String? ?? formatCreatedAt(),
     );
   }
 }
@@ -381,6 +418,13 @@ const List<ActionCardData> _actionCards = [
     path: '/impacto',
     icon: Icons.favorite_border,
     tone: 'blue-soft',
+  ),
+  ActionCardData(
+    title: 'Orientacao e apoio',
+    description: 'Tire duvidas e encontre caminhos, mesmo sem querer doar.',
+    path: '/orientacao',
+    icon: Icons.forum_outlined,
+    tone: 'gold',
   ),
 ];
 
@@ -606,6 +650,54 @@ List<OperationalEvent> getOperationalEvents() {
   ].take(12).toList();
 }
 
+List<AppNotification> getStoredNotifications() {
+  try {
+    final raw = browser.readLocalStorage(_notificationsStorageKey);
+    if (raw == null || raw.trim().isEmpty) return [];
+    final decoded = jsonDecode(raw);
+    if (decoded is! List<Object?>) return [];
+    return decoded
+        .map(AppNotification.fromJson)
+        .whereType<AppNotification>()
+        .toList();
+  } catch (_) {
+    return [];
+  }
+}
+
+List<AppNotification> getNotifications() => [
+  ...getStoredNotifications(),
+  const AppNotification(
+    id: 'welcome',
+    title: 'Bem-vinda ao LatteConect',
+    message: 'Conheca orientacoes, hospitais parceiros e formas de doar.',
+    createdAt: 'Agora',
+  ),
+];
+
+void saveNotification(String title, String message) {
+  final notification = AppNotification(
+    id: 'notice-${DateTime.now().microsecondsSinceEpoch}',
+    title: title,
+    message: message,
+    createdAt: formatCreatedAt(),
+  );
+  final updated = [notification, ...getStoredNotifications()].take(12).toList();
+  browser.writeLocalStorage(
+    _notificationsStorageKey,
+    jsonEncode(updated.map((item) => item.toJson()).toList()),
+  );
+}
+
+String createProtocol(String prefix) {
+  final now = DateTime.now();
+  final suffix = (now.microsecondsSinceEpoch % 10000).toString().padLeft(
+    4,
+    '0',
+  );
+  return 'LTC-$prefix-${now.year.toString().substring(2)}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}-$suffix';
+}
+
 void saveOperationalEvent(OperationalEvent event) {
   final updatedEvents = [
     event,
@@ -624,10 +716,14 @@ enum LattePage {
   schedule,
   donorConfirmed,
   scheduleConfirmed,
+  donationMode,
+  hospitalDelivery,
   request,
   requestConfirmed,
   hospitals,
   impact,
+  guidance,
+  journey,
   login,
   dashboard,
 }
@@ -648,10 +744,14 @@ class LatteRoute {
       '/doar/agendamento' => LattePage.schedule,
       '/doar/confirmado' => LattePage.donorConfirmed,
       '/doar/agendamento-confirmado' => LattePage.scheduleConfirmed,
+      '/doar/modalidade' => LattePage.donationMode,
+      '/doar/entrega-hospital' => LattePage.hospitalDelivery,
       '/solicitar' => LattePage.request,
       '/solicitar/confirmado' => LattePage.requestConfirmed,
       '/hospitais' => LattePage.hospitals,
       '/impacto' => LattePage.impact,
+      '/orientacao' => LattePage.guidance,
+      '/minha-jornada' => LattePage.journey,
       '/entrar' => LattePage.login,
       '/painel' => LattePage.dashboard,
       _ => LattePage.home,
@@ -669,10 +769,14 @@ String _titleForPage(LattePage page) {
     LattePage.schedule => 'Agendar coleta | $_brandName',
     LattePage.donorConfirmed => 'Cadastro confirmado | $_brandName',
     LattePage.scheduleConfirmed => 'Agendamento confirmado | $_brandName',
+    LattePage.donationMode => 'Como doar | $_brandName',
+    LattePage.hospitalDelivery => 'Entrega no hospital | $_brandName',
     LattePage.request => 'Preciso de doacao | $_brandName',
     LattePage.requestConfirmed => 'Solicitacao enviada | $_brandName',
     LattePage.hospitals => 'Hospitais parceiros | $_brandName',
     LattePage.impact => 'Impacto da doacao | $_brandName',
+    LattePage.guidance => 'Orientacao e apoio | $_brandName',
+    LattePage.journey => 'Minha jornada | $_brandName',
     LattePage.login => 'Entrar | $_brandName',
     LattePage.dashboard => 'Painel gestor | $_brandName',
   };
@@ -763,6 +867,15 @@ class _LatteRouterState extends State<_LatteRouter> {
 
   void _recordEvent(OperationalEvent event) {
     saveOperationalEvent(event);
+    final message = switch (event.kind) {
+      EventKind.cadastro =>
+        'Cadastro recebido. A equipe fara a triagem inicial em ate 24 horas uteis.',
+      EventKind.coleta =>
+        'Agendamento confirmado. Guarde o protocolo para acompanhar sua jornada.',
+      EventKind.pedido => 'Solicitacao enviada para a rede parceira.',
+      EventKind.hospital => 'Entrega no hospital registrada com sucesso.',
+    };
+    saveNotification(event.title, message);
     setState(() {});
   }
 
@@ -805,6 +918,9 @@ class _LatteShell extends StatelessWidget {
           ],
         ),
       ),
+      // Assistente demonstrativo: respostas locais, sem IA clinica ou atendimento real.
+      floatingActionButton: ChatbotLauncher(navigate: navigate),
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
     );
   }
 
@@ -819,6 +935,11 @@ class _LatteShell extends StatelessWidget {
           recordEvent: recordEvent,
         ),
         LattePage.schedule => SchedulePage(
+          navigate: navigate,
+          recordEvent: recordEvent,
+        ),
+        LattePage.donationMode => DonationModePage(navigate: navigate),
+        LattePage.hospitalDelivery => HospitalDeliveryPage(
           navigate: navigate,
           recordEvent: recordEvent,
         ),
@@ -843,6 +964,8 @@ class _LatteShell extends StatelessWidget {
           recordEvent: recordEvent,
         ),
         LattePage.impact => ImpactPage(navigate: navigate),
+        LattePage.guidance => GuidancePage(navigate: navigate),
+        LattePage.journey => JourneyPage(navigate: navigate),
         LattePage.login => LoginPage(navigate: navigate),
         LattePage.dashboard => DashboardPage(navigate: navigate),
       },
@@ -993,6 +1116,7 @@ class SiteHeader extends StatelessWidget {
 
   static const List<(String, String)> links = [
     ('Como funciona', '/como-funciona'),
+    ('Orientacao', '/orientacao'),
     ('Hospitais parceiros', '/hospitais'),
     ('Impacto', '/impacto'),
     ('Cadastro', '/doar'),
@@ -1032,6 +1156,7 @@ class SiteHeader extends StatelessWidget {
             Wrap(
               spacing: 12,
               children: [
+                NotificationMenu(navigate: navigate),
                 AppButton(
                   label: 'Entrar',
                   variant: ButtonVariant.ghost,
@@ -1053,6 +1178,10 @@ class SiteHeader extends StatelessWidget {
               itemBuilder: (context) => [
                 for (final (label, path) in links)
                   PopupMenuItem(value: path, child: Text(label)),
+                const PopupMenuItem(
+                  value: '/minha-jornada',
+                  child: Text('Minha jornada'),
+                ),
                 const PopupMenuItem(value: '/entrar', child: Text('Entrar')),
               ],
               child: Container(
@@ -1121,6 +1250,62 @@ class Logo extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class NotificationMenu extends StatelessWidget {
+  const NotificationMenu({required this.navigate, super.key});
+
+  final NavigateTo navigate;
+
+  @override
+  Widget build(BuildContext context) {
+    final notifications = getNotifications();
+    return PopupMenuButton<void>(
+      tooltip: 'Abrir notificacoes',
+      offset: const Offset(0, 48),
+      itemBuilder: (context) => [
+        PopupMenuItem<void>(
+          enabled: false,
+          child: SizedBox(
+            width: 300,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Notificacoes',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 10),
+                for (final notice in notifications.take(4))
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Text(
+                      '${notice.title}\n${notice.message}',
+                      style: AppText.paragraph,
+                    ),
+                  ),
+                TextButton(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    navigate('/minha-jornada');
+                  },
+                  child: const Text('Ver minha jornada'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+      child: Badge(
+        label: Text('${notifications.length}'),
+        child: IconButton(
+          onPressed: null,
+          icon: const Icon(Icons.notifications_none, color: AppColors.blue),
         ),
       ),
     );
@@ -2005,7 +2190,7 @@ class DonorPage extends StatelessWidget {
             AppButton(
               label: 'Ja tenho cadastro e quero agendar',
               variant: ButtonVariant.ghost,
-              onPressed: () => navigate('/doar/agendamento'),
+              onPressed: () => navigate('/doar/modalidade'),
             ),
           ],
         ),
@@ -2094,6 +2279,7 @@ class _DonorRegistrationState extends State<DonorRegistration> {
       targetPath,
       query: targetPath == '/doar/confirmado'
           ? {
+              'protocolo': createProtocol('CAD'),
               'nome': _read(_nome, _defaultDonor['nome']!),
               'telefone': _read(_telefone, _defaultDonor['telefone']!),
               'bairro': _read(_bairro, _defaultDonor['bairro']!),
@@ -2723,6 +2909,505 @@ String _read(TextEditingController controller, String fallback) {
   return text.isEmpty ? fallback : text;
 }
 
+class DonationModePage extends StatelessWidget {
+  const DonationModePage({required this.navigate, super.key});
+
+  final NavigateTo navigate;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        const PageIntro(
+          eyebrow: 'Formas de doar',
+          title: 'Escolha como prefere contribuir',
+          description:
+              'As duas modalidades passam por orientacao e confirmacao da unidade parceira.',
+        ),
+        Section(
+          top: 8,
+          bottom: 48,
+          child: ResponsiveGrid(
+            minItemWidth: 340,
+            children: [
+              ModeChoiceCard(
+                icon: Icons.home_outlined,
+                title: 'Coleta domiciliar',
+                text:
+                    'Escolha uma janela para a equipe retirar o leite no endereco informado.',
+                action: 'Agendar coleta em casa',
+                onPressed: () => navigate('/doar/agendamento'),
+              ),
+              ModeChoiceCard(
+                icon: Icons.local_hospital_outlined,
+                title: 'Entrega no hospital',
+                text:
+                    'Leve sua doacao a uma unidade parceira, com horario e protocolo de entrega.',
+                action: 'Agendar entrega no hospital',
+                onPressed: () => navigate('/doar/entrega-hospital'),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class ModeChoiceCard extends StatelessWidget {
+  const ModeChoiceCard({
+    required this.icon,
+    required this.title,
+    required this.text,
+    required this.action,
+    required this.onPressed,
+    super.key,
+  });
+
+  final IconData icon;
+  final String title;
+  final String text;
+  final String action;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(26),
+    decoration: _panelDecoration(borderColor: AppColors.line),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SymbolIcon(icon: icon),
+        const SizedBox(height: 18),
+        Text(title, style: AppText.sectionTitle(28)),
+        const SizedBox(height: 10),
+        Text(text, style: AppText.paragraph),
+        const SizedBox(height: 22),
+        AppButton(label: action, onPressed: onPressed),
+      ],
+    ),
+  );
+}
+
+class HospitalDeliveryPage extends StatefulWidget {
+  const HospitalDeliveryPage({
+    required this.navigate,
+    required this.recordEvent,
+    super.key,
+  });
+
+  final NavigateTo navigate;
+  final RecordEvent recordEvent;
+
+  @override
+  State<HospitalDeliveryPage> createState() => _HospitalDeliveryPageState();
+}
+
+class _HospitalDeliveryPageState extends State<HospitalDeliveryPage> {
+  late final TextEditingController _nome;
+  late final TextEditingController _telefone;
+  String _hospital = _hospitals.first.name;
+  String _horario = _timeSlots[1];
+
+  @override
+  void initState() {
+    super.initState();
+    _nome = TextEditingController(text: _defaultSchedule.nome);
+    _telefone = TextEditingController(text: _defaultSchedule.telefone);
+  }
+
+  @override
+  void dispose() {
+    _nome.dispose();
+    _telefone.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final protocol = createProtocol('ENT');
+    widget.recordEvent(
+      createOperationalEvent(
+        EventKind.hospital,
+        title: 'Entrega no hospital agendada',
+        subject: _read(_nome, _defaultSchedule.nome),
+        contact: _read(_telefone, _defaultSchedule.telefone),
+        location: _hospital,
+        date: '28 de maio de 2026',
+        time: _horario,
+        status: 'Confirmado',
+        statusTone: 'green',
+      ),
+    );
+    widget.navigate(
+      '/doar/agendamento-confirmado',
+      query: {
+        'protocolo': protocol,
+        'data': '2026-05-28',
+        'horario': _horario,
+        'hospital': _hospital,
+        'telefone': _read(_telefone, _defaultSchedule.telefone),
+        'modalidade': 'Entrega no hospital',
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      const PageIntro(
+        eyebrow: 'Entrega presencial',
+        title: 'Agende sua entrega no hospital',
+        description:
+            'Escolha uma unidade parceira. Leve o protocolo no dia para facilitar a identificacao da doacao.',
+      ),
+      Section(
+        top: 8,
+        bottom: 48,
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 780),
+          padding: const EdgeInsets.all(28),
+          decoration: _panelDecoration(),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const InlineAlert(
+                text:
+                    'Demonstracao: confirme com a unidade parceira os criterios e horarios reais antes de se deslocar.',
+                icon: Icons.info_outline,
+              ),
+              const SizedBox(height: 20),
+              LabeledTextField(
+                label: 'Nome da nutriz *',
+                controller: _nome,
+                required: true,
+              ),
+              const SizedBox(height: 16),
+              LabeledTextField(
+                label: 'Telefone / WhatsApp *',
+                controller: _telefone,
+                required: true,
+              ),
+              const SizedBox(height: 16),
+              LabeledDropdown(
+                label: 'Hospital parceiro',
+                value: _hospital,
+                items: _hospitals.map((item) => item.name).toList(),
+                onChanged: (value) => setState(() => _hospital = value),
+              ),
+              const SizedBox(height: 16),
+              LabeledDropdown(
+                label: 'Horario de entrega',
+                value: _horario,
+                items: _timeSlots,
+                onChanged: (value) => setState(() => _horario = value),
+              ),
+              const SizedBox(height: 24),
+              AppButton(
+                label: 'Confirmar entrega e gerar protocolo',
+                fullWidth: true,
+                onPressed: _submit,
+              ),
+            ],
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+class GuidancePage extends StatelessWidget {
+  const GuidancePage({required this.navigate, super.key});
+
+  final NavigateTo navigate;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      PageIntro(
+        eyebrow: 'Orientacao e apoio',
+        title: 'Informacao para quem quer cuidar, mesmo sem doar',
+        description:
+            'Encontre orientacoes educativas sobre amamentacao, doacao e acesso a rede de apoio.',
+        actions: [
+          AppButton(
+            label: 'Encontrar hospital parceiro',
+            variant: ButtonVariant.ghost,
+            onPressed: () => navigate('/hospitais'),
+          ),
+        ],
+      ),
+      Section(
+        top: 8,
+        bottom: 48,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const InlineAlert(
+              text:
+                  'Conteudo educativo. Nao substitui avaliacao de profissionais de saude. Em urgencia, procure atendimento imediato.',
+              icon: Icons.health_and_safety_outlined,
+            ),
+            const SizedBox(height: 24),
+            Text('Duvidas frequentes', style: AppText.sectionTitle(31)),
+            const SizedBox(height: 12),
+            for (final item in const [
+              (
+                'Quem pode receber orientacao?',
+                'Qualquer pessoa pode consultar estas informacoes e buscar uma unidade parceira, mesmo sem interesse em doar.',
+              ),
+              (
+                'Como sei se posso doar leite?',
+                'A elegibilidade e confirmada pela equipe do banco de leite. O cadastro e apenas o primeiro passo da triagem.',
+              ),
+              (
+                'Como armazenar o leite?',
+                'Siga sempre as instrucoes atualizadas do banco de leite responsavel antes de coletar, armazenar ou transportar.',
+              ),
+              (
+                'Quando procurar ajuda profissional?',
+                'Se houver dor, febre, dificuldade para amamentar ou preocupacao com o bebe, procure uma unidade de saude.',
+              ),
+            ])
+              Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                decoration: _panelDecoration(borderColor: AppColors.line),
+                child: Material(
+                  color: Colors.transparent,
+                  child: ExpansionTile(
+                    title: Text(item.$1, style: AppText.label),
+                    childrenPadding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+                    children: [Text(item.$2, style: AppText.paragraph)],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    ],
+  );
+}
+
+class JourneyPage extends StatelessWidget {
+  const JourneyPage({required this.navigate, super.key});
+
+  final NavigateTo navigate;
+
+  @override
+  Widget build(BuildContext context) {
+    final events = getOperationalEvents();
+    return Column(
+      children: [
+        PageIntro(
+          eyebrow: 'Minha jornada',
+          title: 'Cada passo fortalece a rede de cuidado',
+          description:
+              'Acompanhamento demonstrativo dos seus protocolos, marcos e impacto estimado.',
+          actions: [
+            AppButton(
+              label: 'Nova doacao',
+              onPressed: () => navigate('/doar/modalidade'),
+            ),
+          ],
+        ),
+        Section(
+          top: 8,
+          bottom: 48,
+          child: ResponsiveGrid(
+            minItemWidth: 270,
+            children: const [
+              InfoCard(
+                icon: Icons.workspace_premium_outlined,
+                title: 'Primeiro passo',
+                text: 'Selo liberado ao concluir o cadastro de doadora.',
+              ),
+              InfoCard(
+                icon: Icons.favorite_outline,
+                title: 'Rede de cuidado',
+                text:
+                    'Progresso demonstrativo: 1 de 3 contribuicoes para o proximo marco.',
+              ),
+              InfoCard(
+                icon: Icons.volunteer_activism_outlined,
+                title: 'Impacto estimado',
+                text:
+                    'Sua participacao ajuda a aproximar leite humano de bebes que precisam.',
+              ),
+            ],
+          ),
+        ),
+        Section(
+          top: 0,
+          bottom: 48,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Atividades recentes', style: AppText.sectionTitle(30)),
+              const SizedBox(height: 16),
+              for (final event in events.take(5))
+                Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.only(bottom: 10),
+                  padding: const EdgeInsets.all(18),
+                  decoration: _panelDecoration(borderColor: AppColors.line),
+                  child: Row(
+                    children: [
+                      SymbolIcon(
+                        icon: event.kind == EventKind.hospital
+                            ? Icons.local_hospital_outlined
+                            : Icons.verified_outlined,
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(event.title, style: AppText.label),
+                            Text(
+                              '${event.date} - ${event.time}',
+                              style: AppText.paragraph,
+                            ),
+                          ],
+                        ),
+                      ),
+                      StatusPill(label: event.status, tone: event.statusTone),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class ChatbotLauncher extends StatelessWidget {
+  const ChatbotLauncher({required this.navigate, super.key});
+
+  final NavigateTo navigate;
+
+  @override
+  Widget build(BuildContext context) => FloatingActionButton.extended(
+    heroTag: 'chatbot',
+    backgroundColor: AppColors.blue,
+    foregroundColor: Colors.white,
+    icon: const Icon(Icons.auto_awesome_outlined),
+    label: const Text('Precisa de ajuda?'),
+    onPressed: () => showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => ChatbotPanel(navigate: navigate),
+    ),
+  );
+}
+
+class ChatbotPanel extends StatefulWidget {
+  const ChatbotPanel({required this.navigate, super.key});
+
+  final NavigateTo navigate;
+
+  @override
+  State<ChatbotPanel> createState() => _ChatbotPanelState();
+}
+
+class _ChatbotPanelState extends State<ChatbotPanel> {
+  String _answer =
+      'Oi! Sou a Luna, assistente demonstrativa do LatteConect. Posso ajudar com orientacoes e encaminhar voce para uma area do site.';
+
+  void _respond(String question) {
+    setState(() {
+      _answer = switch (question) {
+        'Posso doar?' =>
+          'A elegibilidade e confirmada pela equipe do banco de leite. Posso levar voce ao cadastro para iniciar a triagem educativa.',
+        'Como armazenar?' =>
+          'Para armazenar ou transportar leite, siga a orientacao atualizada da unidade parceira. Posso abrir a area de apoio.',
+        'Entrega no hospital' =>
+          'Voce pode escolher uma unidade parceira e agendar uma entrega presencial com protocolo demonstrativo.',
+        _ =>
+          'Para duvidas de saude, dor, febre ou preocupacao com o bebe, procure uma unidade de saude. Este assistente nao realiza diagnosticos.',
+      };
+    });
+  }
+
+  void _go(String path) {
+    Navigator.of(context).pop();
+    widget.navigate(path);
+  }
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    child: Container(
+      margin: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(22),
+      decoration: _panelDecoration(),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const SymbolIcon(icon: Icons.auto_awesome_outlined),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Luna, assistente de orientacao',
+                  style: AppText.sectionTitle(22),
+                ),
+              ),
+              IconButton(
+                onPressed: () => Navigator.of(context).pop(),
+                icon: const Icon(Icons.close),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Text(_answer, style: AppText.paragraph),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final option in const [
+                'Posso doar?',
+                'Como armazenar?',
+                'Entrega no hospital',
+                'Preciso de ajuda',
+              ])
+                OutlinedButton(
+                  onPressed: () => _respond(option),
+                  child: Text(option),
+                ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'Este e um assistente educativo demonstrativo; ele nao faz consultas, diagnosticos ou atendimento de emergencia.',
+            style: TextStyle(
+              color: AppColors.muted,
+              fontSize: 12,
+              height: 1.35,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              AppButton(
+                label: 'Ver orientacoes',
+                variant: ButtonVariant.ghost,
+                onPressed: () => _go('/orientacao'),
+              ),
+              AppButton(label: 'Quero doar', onPressed: () => _go('/doar')),
+            ],
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 class SchedulePage extends StatelessWidget {
   const SchedulePage({
     required this.navigate,
@@ -2829,6 +3514,7 @@ class _SchedulePanelState extends State<SchedulePanel> {
     widget.navigate(
       '/doar/agendamento-confirmado',
       query: {
+        'protocolo': createProtocol('COL'),
         'data': date,
         'horario': _horario,
         'telefone': _read(_telefone, _defaultSchedule.telefone),
@@ -3313,6 +3999,7 @@ class DonorConfirmedPage extends StatelessWidget {
           'Recebemos os dados da nutriz. A equipe do banco de leite parceiro fara a triagem inicial antes da primeira coleta.',
       details: [
         ('Status', 'Cadastro recebido'),
+        ('Protocolo', _param(route, 'protocolo', 'LTC-CAD-260910-0000')),
         ('Nutriz', _param(route, 'nome', 'Marina Santos')),
         ('Telefone', _param(route, 'telefone', 'Telefone informado')),
         ('Bairro', _param(route, 'bairro', 'Vila Clementino')),
@@ -3320,8 +4007,8 @@ class DonorConfirmedPage extends StatelessWidget {
         ('Retorno estimado', 'Ate 24 horas uteis'),
       ],
       eyebrow: 'Cadastro confirmado',
-      primaryAction: ('/doar/agendamento', 'Agendar coleta'),
-      secondaryAction: ('/impacto', 'Ver impacto da doacao'),
+      primaryAction: ('/doar/modalidade', 'Escolher forma de doacao'),
+      secondaryAction: ('/minha-jornada', 'Ver minha jornada'),
       title: 'Cadastro recebido com sucesso',
     );
   }
@@ -3348,6 +4035,7 @@ class ScheduleConfirmedPage extends StatelessWidget {
           'Sua janela de coleta foi registrada. A unidade parceira confirma os detalhes por telefone antes da visita domiciliar.',
       details: [
         ('Status', 'Agendamento confirmado'),
+        ('Protocolo', _param(route, 'protocolo', 'LTC-COL-260910-0000')),
         ('Data prevista', formatLongDate(date)),
         ('Horario', _param(route, 'horario', '09:00 - 10:00')),
         (
@@ -3360,8 +4048,8 @@ class ScheduleConfirmedPage extends StatelessWidget {
         ),
       ],
       eyebrow: 'Coleta confirmada',
-      primaryAction: ('/impacto', 'Ver impacto da doacao'),
-      secondaryAction: ('/painel', 'Ver painel gestor'),
+      primaryAction: ('/minha-jornada', 'Ver minha jornada'),
+      secondaryAction: ('/impacto', 'Ver impacto da doacao'),
       title: 'Agendamento confirmado',
     );
   }
@@ -3451,6 +4139,7 @@ class _RequestFormState extends State<RequestForm> {
     widget.navigate(
       '/solicitar/confirmado',
       query: {
+        'protocolo': createProtocol('PED'),
         'solicitante': _read(_solicitante, _defaultRequest['solicitante']!),
         'telefone': _read(_telefone, _defaultRequest['telefone']!),
         'perfil': _perfil,
@@ -3584,6 +4273,7 @@ class RequestConfirmedPage extends StatelessWidget {
           'A solicitacao foi registrada e encaminhada para a rede parceira. O contato informado sera usado para retorno e orientacao.',
       details: [
         ('Status', 'Solicitacao enviada'),
+        ('Protocolo', _param(route, 'protocolo', 'LTC-PED-260910-0000')),
         ('Solicitante', _param(route, 'solicitante', 'Renata Alves')),
         (
           'Canal de retorno',
