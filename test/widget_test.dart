@@ -2,6 +2,20 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:latte_conect/src/app.dart';
 
 void main() {
+  test('creates and authenticates a donor account locally', () {
+    const email = 'teste.login@latteconect.org.br';
+    expect(
+      registerAccount(
+        name: 'Conta de Teste',
+        email: email,
+        password: 'senha-segura',
+      ),
+      isTrue,
+    );
+    expect(authenticateAccount(email, 'senha-segura')?.name, 'Conta de Teste');
+    expect(authenticateAccount(email, 'senha-invalida'), isNull);
+  });
+
   testWidgets('renders LatteConect home and primary routes', (tester) async {
     await tester.pumpWidget(const LatteConectApp());
     await tester.pumpAndSettle();

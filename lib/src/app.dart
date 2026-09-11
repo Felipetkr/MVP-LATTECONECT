@@ -10,6 +10,8 @@ const String _brandName = 'LatteConect';
 const String _brandCaption = 'banco de leite';
 const String _eventsStorageKey = 'latteconect-operational-events';
 const String _notificationsStorageKey = 'latteconect-notifications';
+const String _accountsStorageKey = 'latteconect-accounts';
+const String _activeAccountStorageKey = 'latteconect-active-account';
 const double _maxContentWidth = 1420;
 const double _headerHeight = 78;
 const double _radius = 8;
@@ -223,6 +225,45 @@ class AppNotification {
           'notice-${DateTime.now().microsecondsSinceEpoch}',
       title: title,
       message: message,
+      createdAt: value['createdAt'] as String? ?? formatCreatedAt(),
+    );
+  }
+}
+
+/// Conta local usada somente no prototipo web. Uma versao de producao deve
+/// delegar autenticacao e armazenamento de senha a um servico seguro.
+class UserAccount {
+  const UserAccount({
+    required this.name,
+    required this.email,
+    required this.password,
+    required this.createdAt,
+  });
+
+  final String name;
+  final String email;
+  final String password;
+  final String createdAt;
+
+  Map<String, String> toJson() => {
+    'name': name,
+    'email': email,
+    'password': password,
+    'createdAt': createdAt,
+  };
+
+  static UserAccount? fromJson(Object? value) {
+    if (value is! Map<String, Object?>) return null;
+    final name = value['name'];
+    final email = value['email'];
+    final password = value['password'];
+    if (name is! String || email is! String || password is! String) {
+      return null;
+    }
+    return UserAccount(
+      name: name,
+      email: email.toLowerCase(),
+      password: password,
       createdAt: value['createdAt'] as String? ?? formatCreatedAt(),
     );
   }
@@ -687,6 +728,65 @@ void saveNotification(String title, String message) {
     _notificationsStorageKey,
     jsonEncode(updated.map((item) => item.toJson()).toList()),
   );
+}
+
+List<UserAccount> getStoredAccounts() {
+  try {
+    final raw = browser.readLocalStorage(_accountsStorageKey);
+    if (raw == null || raw.trim().isEmpty) return [];
+    final decoded = jsonDecode(raw);
+    if (decoded is! List<Object?>) return [];
+    return decoded.map(UserAccount.fromJson).whereType<UserAccount>().toList();
+  } catch (_) {
+    return [];
+  }
+}
+
+bool emailIsRegistered(String email) => getStoredAccounts().any(
+  (account) => account.email == email.trim().toLowerCase(),
+);
+
+bool registerAccount({
+  required String name,
+  required String email,
+  required String password,
+}) {
+  final normalizedEmail = email.trim().toLowerCase();
+  if (emailIsRegistered(normalizedEmail)) return false;
+  final account = UserAccount(
+    name: name.trim(),
+    email: normalizedEmail,
+    password: password,
+    createdAt: formatCreatedAt(),
+  );
+  browser.writeLocalStorage(
+    _accountsStorageKey,
+    jsonEncode(
+      [...getStoredAccounts(), account].map((item) => item.toJson()).toList(),
+    ),
+  );
+  browser.writeLocalStorage(_activeAccountStorageKey, normalizedEmail);
+  return true;
+}
+
+UserAccount? authenticateAccount(String email, String password) {
+  final normalizedEmail = email.trim().toLowerCase();
+  for (final account in getStoredAccounts()) {
+    if (account.email == normalizedEmail && account.password == password) {
+      browser.writeLocalStorage(_activeAccountStorageKey, account.email);
+      return account;
+    }
+  }
+  return null;
+}
+
+UserAccount? getActiveAccount() {
+  final email = browser.readLocalStorage(_activeAccountStorageKey);
+  if (email == null) return null;
+  for (final account in getStoredAccounts()) {
+    if (account.email == email) return account;
+  }
+  return null;
 }
 
 String createProtocol(String prefix) {
@@ -2219,6 +2319,8 @@ class _DonorRegistrationState extends State<DonorRegistration> {
   late final TextEditingController _nome;
   late final TextEditingController _telefone;
   late final TextEditingController _email;
+  late final TextEditingController _senha;
+  late final TextEditingController _confirmarSenha;
   late final TextEditingController _nascimento;
   late final TextEditingController _cep;
   late final TextEditingController _bairro;
@@ -2228,6 +2330,7 @@ class _DonorRegistrationState extends State<DonorRegistration> {
   String _medicamentos = _defaultDonor['medicamentos']!;
   bool _contatoAutorizado = true;
   bool _triagemAutorizada = true;
+  String? _accountError;
 
   @override
   void initState() {
@@ -2235,6 +2338,8 @@ class _DonorRegistrationState extends State<DonorRegistration> {
     _nome = TextEditingController(text: _defaultDonor['nome']);
     _telefone = TextEditingController(text: _defaultDonor['telefone']);
     _email = TextEditingController(text: _defaultDonor['email']);
+    _senha = TextEditingController();
+    _confirmarSenha = TextEditingController();
     _nascimento = TextEditingController(text: _defaultDonor['nascimento']);
     _cep = TextEditingController(text: _defaultDonor['cep']);
     _bairro = TextEditingController(text: _defaultDonor['bairro']);
@@ -2247,6 +2352,8 @@ class _DonorRegistrationState extends State<DonorRegistration> {
     _nome.dispose();
     _telefone.dispose();
     _email.dispose();
+    _senha.dispose();
+    _confirmarSenha.dispose();
     _nascimento.dispose();
     _cep.dispose();
     _bairro.dispose();
@@ -2259,6 +2366,30 @@ class _DonorRegistrationState extends State<DonorRegistration> {
     if (!(_formKey.currentState?.validate() ?? false)) {
       return;
     }
+
+    final password = _senha.text;
+    if (password.length < 8) {
+      setState(
+        () => _accountError = 'Crie uma senha com pelo menos 8 caracteres.',
+      );
+      return;
+    }
+    if (password != _confirmarSenha.text) {
+      setState(() => _accountError = 'As senhas informadas nao coincidem.');
+      return;
+    }
+    if (!registerAccount(
+      name: _read(_nome, _defaultDonor['nome']!),
+      email: _read(_email, _defaultDonor['email']!),
+      password: password,
+    )) {
+      setState(
+        () => _accountError =
+            'Este e-mail ja possui uma conta. Entre para continuar.',
+      );
+      return;
+    }
+    setState(() => _accountError = null);
 
     widget.recordEvent(
       createOperationalEvent(
@@ -2333,8 +2464,9 @@ class _DonorRegistrationState extends State<DonorRegistration> {
                           placeholder: '(00) 00000-0000',
                         ),
                         LabeledTextField(
-                          label: 'E-mail',
+                          label: 'E-mail *',
                           controller: _email,
+                          required: true,
                           placeholder: 'seumail@exemplo.com',
                           keyboardType: TextInputType.emailAddress,
                         ),
@@ -2357,6 +2489,55 @@ class _DonorRegistrationState extends State<DonorRegistration> {
                         ),
                       ],
                     ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 22),
+              Container(
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceSoft,
+                  border: Border.all(color: AppColors.line),
+                  borderRadius: BorderRadius.circular(_radius),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Acesso a sua jornada', style: AppText.label),
+                    const SizedBox(height: 5),
+                    const Text(
+                      'Crie uma senha para entrar depois e acompanhar seus protocolos.',
+                      style: AppText.paragraph,
+                    ),
+                    const SizedBox(height: 16),
+                    ResponsiveGrid(
+                      children: [
+                        LabeledTextField(
+                          label: 'Crie uma senha *',
+                          controller: _senha,
+                          required: true,
+                          obscureText: true,
+                          placeholder: 'Minimo de 8 caracteres',
+                        ),
+                        LabeledTextField(
+                          label: 'Confirme sua senha *',
+                          controller: _confirmarSenha,
+                          required: true,
+                          obscureText: true,
+                          placeholder: 'Digite a senha novamente',
+                        ),
+                      ],
+                    ),
+                    if (_accountError != null) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        _accountError!,
+                        style: const TextStyle(
+                          color: Color(0xFFC34242),
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -3195,13 +3376,17 @@ class JourneyPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final events = getOperationalEvents();
+    final account = getActiveAccount();
     return Column(
       children: [
         PageIntro(
           eyebrow: 'Minha jornada',
-          title: 'Cada passo fortalece a rede de cuidado',
-          description:
-              'Acompanhamento demonstrativo dos seus protocolos, marcos e impacto estimado.',
+          title: account == null
+              ? 'Cada passo fortalece a rede de cuidado'
+              : 'Ola, ${account.name.split(' ').first}',
+          description: account == null
+              ? 'Acompanhamento demonstrativo dos seus protocolos, marcos e impacto estimado.'
+              : 'Sua conta esta conectada. Acompanhe seus protocolos, marcos e impacto estimado.',
           actions: [
             AppButton(
               label: 'Nova doacao',
@@ -5012,7 +5197,7 @@ class _LoginCopy extends StatelessWidget {
         Eyebrow('Entrada'),
         SizedBox(height: 12),
         Text(
-          'Acesso ao painel gestor',
+          'Entre na sua conta',
           style: TextStyle(
             color: AppColors.blueDark,
             fontFamily: 'Georgia',
@@ -5024,7 +5209,7 @@ class _LoginCopy extends StatelessWidget {
         ),
         SizedBox(height: 18),
         Text(
-          'O painel e separado dos fluxos publicos. Profissionais de hospitais e bancos parceiros entram com seus dados antes de acessar indicadores e cadastros.',
+          'Doadoras acompanham sua jornada com o e-mail e a senha criados no cadastro. Profissionais de hospitais e bancos parceiros tambem podem acessar o painel institucional.',
           style: AppText.lead,
         ),
         SizedBox(height: 22),
@@ -5032,9 +5217,9 @@ class _LoginCopy extends StatelessWidget {
           spacing: 12,
           runSpacing: 12,
           children: [
+            InfoChip('Conta pessoal'),
             InfoChip('Acesso identificado'),
-            InfoChip('Perfil institucional'),
-            InfoChip('Painel operacional'),
+            InfoChip('Painel institucional'),
           ],
         ),
       ],
@@ -5052,9 +5237,11 @@ class LoginForm extends StatefulWidget {
 }
 
 class _LoginFormState extends State<LoginForm> {
+  final _formKey = GlobalKey<FormState>();
   late final TextEditingController _email;
   late final TextEditingController _senha;
   String _perfil = _defaultLogin['perfil']!;
+  String? _error;
 
   @override
   void initState() {
@@ -5070,59 +5257,105 @@ class _LoginFormState extends State<LoginForm> {
     super.dispose();
   }
 
+  void _signIn() {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+
+    if (_perfil == 'Doadora / familia') {
+      final account = authenticateAccount(_email.text, _senha.text);
+      if (account == null) {
+        setState(() {
+          _error =
+              'E-mail ou senha incorretos. Se ainda nao tem conta, faca seu cadastro.';
+        });
+        return;
+      }
+      widget.navigate('/minha-jornada');
+      return;
+    }
+
+    if (_email.text.trim().toLowerCase() != _defaultLogin['email'] ||
+        _senha.text != _defaultLogin['senha']) {
+      setState(() => _error = 'Confira o e-mail e a senha institucional.');
+      return;
+    }
+    widget.navigate('/painel');
+  }
+
   @override
   Widget build(BuildContext context) {
     return Align(
       alignment: Alignment.centerRight,
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 560),
-        child: Container(
-          padding: const EdgeInsets.all(28),
-          decoration: _panelDecoration(),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const FormTitle(
-                icon: Icons.verified_user_outlined,
-                eyebrow: 'Dados de acesso',
-                title: 'Entrar no LatteConect',
-              ),
-              const SizedBox(height: 18),
-              LabeledTextField(
-                label: 'E-mail institucional *',
-                controller: _email,
-                keyboardType: TextInputType.emailAddress,
-                required: true,
-                placeholder: 'profissional@hospital.org',
-              ),
-              const SizedBox(height: 16),
-              LabeledTextField(
-                label: 'Senha *',
-                controller: _senha,
-                required: true,
-                obscureText: true,
-                placeholder: 'Digite sua senha',
-              ),
-              const SizedBox(height: 16),
-              LabeledDropdown(
-                label: 'Perfil de acesso',
-                value: _perfil,
-                items: const [
-                  'Banco de leite',
-                  'Hospital parceiro',
-                  'Administrador',
+        child: Form(
+          key: _formKey,
+          child: Container(
+            padding: const EdgeInsets.all(28),
+            decoration: _panelDecoration(),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const FormTitle(
+                  icon: Icons.verified_user_outlined,
+                  eyebrow: 'Dados de acesso',
+                  title: 'Entrar no LatteConect',
+                ),
+                const SizedBox(height: 18),
+                LabeledTextField(
+                  label: 'E-mail *',
+                  controller: _email,
+                  keyboardType: TextInputType.emailAddress,
+                  required: true,
+                  placeholder: 'profissional@hospital.org',
+                ),
+                const SizedBox(height: 16),
+                LabeledTextField(
+                  label: 'Senha *',
+                  controller: _senha,
+                  required: true,
+                  obscureText: true,
+                  placeholder: 'Digite sua senha',
+                ),
+                const SizedBox(height: 16),
+                LabeledDropdown(
+                  label: 'Perfil de acesso',
+                  value: _perfil,
+                  items: const [
+                    'Doadora / familia',
+                    'Banco de leite',
+                    'Hospital parceiro',
+                    'Administrador',
+                  ],
+                  onChanged: (value) => setState(() {
+                    _perfil = value;
+                  }),
+                ),
+                const SizedBox(height: 24),
+                if (_error != null) ...[
+                  Text(
+                    _error!,
+                    style: const TextStyle(
+                      color: Color(0xFFC34242),
+                      fontWeight: FontWeight.w700,
+                      height: 1.35,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
                 ],
-                onChanged: (value) => setState(() {
-                  _perfil = value;
-                }),
-              ),
-              const SizedBox(height: 24),
-              AppButton(
-                label: 'Acessar painel ->',
-                fullWidth: true,
-                onPressed: () => widget.navigate('/painel'),
-              ),
-            ],
+                AppButton(
+                  label: _perfil == 'Doadora / familia'
+                      ? 'Entrar na minha jornada ->'
+                      : 'Acessar painel ->',
+                  fullWidth: true,
+                  onPressed: _signIn,
+                ),
+                const SizedBox(height: 14),
+                TextButton(
+                  onPressed: () => widget.navigate('/doar'),
+                  child: const Text('Ainda nao tenho conta — criar cadastro'),
+                ),
+              ],
+            ),
           ),
         ),
       ),
